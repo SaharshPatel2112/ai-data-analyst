@@ -1,7 +1,10 @@
 import axios from "axios";
 
+// ── Use environment variable in production, localhost in development ────────
+const BASE_URL = import.meta.env.VITE_API_URL || "/api";
+
 const api = axios.create({
-  baseURL: "/api",
+  baseURL: BASE_URL,
   timeout: 30000,
 });
 
@@ -33,7 +36,7 @@ export async function analyzeData(sessionId, operation) {
   return res.data;
 }
 
-// Get AI-generated dataset summary
+// Get AI dataset summary
 export async function getSummary(sessionId) {
   const res = await api.post("/summary", { sessionId });
   return res.data;

@@ -63,9 +63,19 @@ const AXIS_STYLE = {
   tickLine: false,
 };
 
+const smartXFormatter = (v) => {
+  if (typeof v === "number") {
+    // Looks like a year → show as-is
+    if (v >= 1900 && v <= 2200) return String(v);
+    // Small integer → show as-is
+    if (Number.isInteger(v) && v < 1000) return String(v);
+  }
+  if (typeof v === "string") return truncate(v, 12);
+  return formatNumber(v);
+};
+
 // ── Main Component ─────────────────────────────────────────────────────────
 export default function ChartRenderer({ data, chartType, xKey, yKey, title }) {
-  // Guard — show message if no data
   if (!data || data.length === 0) {
     return (
       <div
@@ -83,12 +93,9 @@ export default function ChartRenderer({ data, chartType, xKey, yKey, title }) {
     );
   }
 
-  // Truncate long labels so they don't overflow the axis
   const tickFormatter = (v) =>
     typeof v === "string" ? truncate(String(v), 12) : formatNumber(v);
 
-  // ── TABLE ────────────────────────────────────────────────────────────────
-  // When AI returns raw data, show it as a table instead of a chart
   if (chartType === "table") {
     const cols = Object.keys(data[0]);
     return (
@@ -171,7 +178,7 @@ export default function ChartRenderer({ data, chartType, xKey, yKey, title }) {
             strokeDasharray="3 3"
             stroke="rgba(148,163,184,0.07)"
           />
-          <XAxis dataKey={xKey} {...AXIS_STYLE} tickFormatter={tickFormatter} />
+          <XAxis dataKey={xKey} {...AXIS_STYLE} tickFormatter={smartXFormatter} />
           <YAxis {...AXIS_STYLE} tickFormatter={formatNumber} width={58} />
           <Tooltip content={<CustomTooltip />} />
           <Line
@@ -207,7 +214,7 @@ export default function ChartRenderer({ data, chartType, xKey, yKey, title }) {
             strokeDasharray="3 3"
             stroke="rgba(148,163,184,0.07)"
           />
-          <XAxis dataKey={xKey} {...AXIS_STYLE} tickFormatter={tickFormatter} />
+          <XAxis dataKey={xKey} {...AXIS_STYLE} tickFormatter={smartXFormatter} />
           <YAxis {...AXIS_STYLE} tickFormatter={formatNumber} width={58} />
           <Tooltip content={<CustomTooltip />} />
           <Area
@@ -242,7 +249,7 @@ export default function ChartRenderer({ data, chartType, xKey, yKey, title }) {
     <ResponsiveContainer width="100%" height={280}>
       <BarChart data={data} margin={{ top: 4, right: 20, left: 0, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.07)" />
-        <XAxis dataKey={xKey} {...AXIS_STYLE} tickFormatter={tickFormatter} />
+        <XAxis dataKey={xKey} {...AXIS_STYLE} tickFormatter={smartXFormatter} />
         <YAxis
           {...AXIS_STYLE}
           tickFormatter={formatNumber}

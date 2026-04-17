@@ -16,6 +16,7 @@ export default function SummaryCard({ session }) {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [showFindings, setShowFindings] = useState(false);
 
   // Fetch summary automatically when component mounts
   useEffect(() => {
@@ -230,48 +231,73 @@ export default function SummaryCard({ session }) {
         {summary.summary}
       </p>
 
-      {/* ── Quick Insights Bullets ─────────────── */}
+      {/* ── Show More / Key Findings ──────────────── */}
       {summary.quickInsights?.length > 0 && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-          }}
-        >
-          <p
+        <div>
+          <button
+            onClick={() => setShowFindings(!showFindings)}
             style={{
-              fontSize: 11,
-              color: "var(--text-muted)",
-              textTransform: "uppercase",
-              letterSpacing: "0.07em",
-              marginBottom: 4,
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 13,
+              color: "var(--brand)",
+              padding: 0,
+              fontFamily: "DM Sans, sans-serif",
+              fontWeight: 500,
             }}
           >
-            Key Findings
-          </p>
-          {summary.quickInsights.map((insight, i) => (
+            {showFindings ? "▲ Show less" : "▼ Show more — Key Findings"}
+          </button>
+
+          {showFindings && (
             <div
-              key={i}
               style={{
                 display: "flex",
-                alignItems: "flex-start",
-                gap: 10,
-                padding: "8px 12px",
-                background: "var(--bg-input)",
-                borderRadius: 10,
-                fontSize: 13,
-                color: "var(--text-secondary)",
+                flexDirection: "column",
+                gap: 8,
+                marginTop: 12,
+                animation: "pageEnter 0.2s ease forwards",
               }}
             >
-              <TrendingUp
-                size={13}
-                color="var(--accent-teal)"
-                style={{ marginTop: 2, flexShrink: 0 }}
-              />
-              {insight}
+              <p
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                  marginBottom: 4,
+                }}
+              >
+                Key Findings
+              </p>
+              {summary.quickInsights.map((insight, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    padding: "8px 12px",
+                    background: "var(--bg-input)",
+                    borderRadius: 10,
+                    fontSize: 13,
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  <TrendingUp
+                    size={13}
+                    color="var(--accent-teal)"
+                    style={{ marginTop: 2, flexShrink: 0 }}
+                  />
+                  {insight}
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
 
