@@ -31,6 +31,47 @@ router.post("/", (req, res) => {
     let yKey = "";
 
     switch (operation.type) {
+      // ── FILTER ────────────────────────────────────────────────────────────
+      case "filter": {
+        const col = operation.filterCol;
+        const val = operation.filterVal;
+        const op = operation.operator || "contains";
+
+        if (!col || val === undefined) {
+          return res.status(400).json({ error: "Missing filter criteria." });
+        }
+
+        result = data
+          .filter((row) => {
+            const rowVal = row[col];
+            if (rowVal == null) return false;
+
+            const numRowVal = Number(rowVal);
+            const numSearchVal = Number(val);
+
+            // Handle numeric operators
+            if (op === ">") return numRowVal > numSearchVal;
+            if (op === "<") return numRowVal < numSearchVal;
+            if (op === ">=") return numRowVal >= numSearchVal;
+            if (op === "<=") return numRowVal <= numSearchVal;
+
+            // Handle string operators
+            if (op === "equals")
+              return String(rowVal).toLowerCase() === String(val).toLowerCase();
+
+            // Default: contains (partial match)
+            return String(rowVal)
+              .toLowerCase()
+              .includes(String(val).toLowerCase());
+          })
+          .slice(0, operation.limit || 50);
+
+        xKey = columns[0];
+        yKey = columns[1] || columns[0];
+        chartType = "table";
+        break;
+      }
+
       // ── GROUP BY ──────────────────────────────────────────────────────────
       case "group_by": {
         const groupCol =
@@ -72,7 +113,6 @@ router.post("/", (req, res) => {
 
         result = topN(data, col, operation.n || 5, operation.order || "desc");
 
-        // Find best label column (string type, not the metric column)
         xKey = columns.find((c) => columnTypes[c] === "string") || columns[0];
         yKey = col;
         chartType = "bar";
@@ -97,7 +137,6 @@ router.post("/", (req, res) => {
           });
         }
 
-        // Group by date column and sum metric
         const groups = {};
         data.forEach((row) => {
           const key = row[dateCol];
@@ -188,6 +227,37 @@ router.post("/", (req, res) => {
         break;
       }
 
+      case "count_by": {
+        const col =
+          operation.countCol ||
+          operation.column ||
+          columns.find((c) => columnTypes[c] === "string");
+
+        if (!col) {
+          return res.status(400).json({
+            error: "Could not find a column to count by.",
+          });
+        }
+
+        const freq = {};
+        data.forEach((row) => {
+          const v = row[col];
+          if (v != null && v !== "") {
+            freq[String(v)] = (freq[String(v)] || 0) + 1;
+          }
+        });
+
+        result = Object.entries(freq)
+          .map(([k, v]) => ({ [col]: k, count: v }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 15);
+
+        xKey = col;
+        yKey = "count";
+        chartType = "bar";
+        break;
+      }
+
       default: {
         result = data.slice(0, 10);
         xKey = columns[0];
@@ -203,7 +273,22 @@ router.post("/", (req, res) => {
       });
     }
 
-    res.json({ result, chartType, xKey, yKey });
+    // ── Anti-Formatting Fix: Convert "year" columns to strings ─────────────
+    // This stops frontend dashboard libraries from abbreviating years to "2.0K"
+    const finalResult = result.map((row) => {
+      const newRow = { ...row };
+      Object.keys(newRow).forEach((key) => {
+        // Force conversion if the column type is specifically 'year' or the name contains 'year'
+        if (columnTypes[key] === "year" || key.toLowerCase().includes("year")) {
+          if (newRow[key] != null) {
+            newRow[key] = String(newRow[key]);
+          }
+        }
+      });
+      return newRow;
+    });
+
+    res.json({ result: finalResult, chartType, xKey, yKey });
   } catch (err) {
     console.error("Analyze error:", err.message);
     res.status(500).json({

@@ -5,6 +5,71 @@ import { sessionStore } from "./upload.js";
 dotenv.config();
 const router = express.Router();
 
+// ── Pre-compute full dataset stats to send to AI ───────────────────────────
+// Instead of sending raw rows (limited), we compute real counts from ALL data
+function computeDatasetContext(data, columns, columnTypes) {
+  const context = {};
+
+  columns.forEach((col) => {
+    const type = columnTypes[col];
+
+    if (type === "string") {
+      // Count frequency of each unique value across ALL rows
+      const freq = {};
+      data.forEach((row) => {
+        const v = row[col];
+        if (v != null && v !== "") {
+          freq[String(v)] = (freq[String(v)] || 0) + 1;
+        }
+      });
+      const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
+
+      context[col] = {
+        type: "string",
+        uniqueValues: sorted.length,
+        // Send ALL value counts so AI knows exact numbers
+        valueCounts: Object.fromEntries(sorted),
+        topValues: sorted.slice(0, 10).map(([k, v]) => `${k}: ${v} records`),
+      };
+    } else if (type === "numeric") {
+      const vals = data.map((r) => Number(r[col])).filter((v) => !isNaN(v));
+      if (vals.length > 0) {
+        const sum = vals.reduce((a, b) => a + b, 0);
+        const avg = sum / vals.length;
+        const min = Math.min(...vals);
+        const max = Math.max(...vals);
+        context[col] = {
+          type: "numeric",
+          count: vals.length,
+          sum: +sum.toFixed(2),
+          avg: +avg.toFixed(2),
+          min,
+          max,
+        };
+      }
+    } else if (type === "year") {
+      // Count records per year across ALL data
+      const yearCount = {};
+      data.forEach((row) => {
+        const v = row[col];
+        if (v != null) yearCount[String(v)] = (yearCount[String(v)] || 0) + 1;
+      });
+      context[col] = {
+        type: "year",
+        yearCounts: yearCount,
+        uniqueYears: Object.keys(yearCount).sort(),
+      };
+    } else if (type === "date") {
+      context[col] = {
+        type: "date",
+        sampleValues: [...new Set(data.slice(0, 5).map((r) => r[col]))],
+      };
+    }
+  });
+
+  return context;
+}
+
 router.post("/", async (req, res) => {
   try {
     const { sessionId, query } = req.body;
@@ -20,86 +85,81 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const { columns, columnTypes, stats, data, filename } = session;
+    const { columns, columnTypes, data, filename } = session;
 
-    // Send first 10 rows as sample so AI can read actual values
-    const sampleRows = data.slice(0, 10);
+    // ── Compute full dataset context from ALL rows ─────────────────────────
+    const datasetContext = computeDatasetContext(data, columns, columnTypes);
 
-    // Build readable stats for AI
-    const numericCols = columns.filter((c) => columnTypes[c] === "numeric");
-    const statsSummary = numericCols
-      .map((col) => {
-        const s = stats[col];
-        if (!s) return "";
-        return `${col}: total=${s.sum}, avg=${s.mean}, min=${s.min}, max=${s.max}, count=${s.count}`;
-      })
-      .join("\n");
+    const prompt = `You are an intelligent data analyst. You have access to metadata about the entire dataset.
 
-    const prompt = `You are an intelligent data analyst assistant. The user has uploaded a CSV file and you have full access to its contents.
+DATASET: ${filename}
+TOTAL ROWS: ${data.length}
+COLUMNS: ${columns.join(", ")}
+COLUMN TYPES: ${JSON.stringify(columnTypes)}
 
-DATASET INFO:
-- Filename: ${filename}
-- Total rows: ${data.length}
-- Columns: ${columns.join(", ")}
-- Column types: ${JSON.stringify(columnTypes)}
-- Sample data (first 10 rows): ${JSON.stringify(sampleRows)}
-- Numeric statistics:
-${statsSummary}
+FULL DATASET STATISTICS (computed from ALL ${data.length} rows):
+${JSON.stringify(datasetContext, null, 2)}
 
 USER QUESTION: "${query}"
 
 INSTRUCTIONS:
-First decide what type of response is needed:
+Decide the appropriate response type based on the user's intent:
 
-TYPE 1 - CONVERSATIONAL: Use this when the user:
-- Greets you (hi, hello, hey)
-- Says thanks, thank you, great, ok, bye, goodbye, cool, nice
-- Asks a general question about the data
-- Asks for explanation or advice
-- Says anything that does NOT need a chart
+TYPE 1 - CONVERSATIONAL (Text Answer):
+Use this when the user asks for summaries, counts, totals, averages, or general explanations.
+- "how many students failed?" → use valueCounts to answer directly in text.
+- "what is the average score?" → use numeric stats to answer.
+- Give EXACT numbers from the statistics above. Do not guess.
 
-For greetings and thanks — keep the answer SHORT (1 sentence max). Do NOT give data info unless asked.
-For "thanks" or "bye" — just say something like "You're welcome! Let me know if you need anything else." — nothing more.
-isEnding should be true when user says thanks/bye/ok/done.
+TYPE 2 - DATA VISUALIZATION & LISTS (Chart/Table):
+Use this when the user asks to SEE the data, wants a chart, or asks for a LIST of specific people/rows.
+- "show me a chart", "visualize X"
+- "list the names of people who failed", "who failed?", "show me the details of students with A grade" → USE THE 'filter' OPERATION with 'table' chartType.
 
-TYPE 2 - CHART: Use this when user wants:
-- A visualization, ranking, comparison, trend, or distribution
-- Explicitly mentions "show", "chart", "top", "highest", "lowest", "compare", "pie", "bar", "distribution"
+Available operations for TYPE 2:
+- "filter": (NEW) use this when user wants a list, names, or specific rows matching a condition. Returns a table.
+- "distribution": count frequency of values in a string column → pie chart
+- "group_by": group by string col, aggregate numeric col → bar chart  
+- "top_n": top N rows by numeric col → bar chart
+- "trend": values over time → line chart
+- "stats": statistics for numeric col → bar chart
+- "raw": show raw data → table
+- "count_by": count records grouped by a string column → bar chart
 
-If user says "pie chart" or "distribution" → always use chartType "pie" and operation type "distribution"
+JSON OUTPUT FORMATS:
 
-If TYPE 1 - respond with:
+If TYPE 1 (Text):
 {
   "responseType": "text",
-  "answer": "Your answer here",
+  "answer": "Precise answer using EXACT numbers from the statistics.",
   "isEnding": false,
-  "followUp": "One suggestion for what to ask next (null if isEnding is true)"
+  "followUp": "A useful follow-up question suggestion"
 }
 
-If TYPE 2 - respond with:
+If TYPE 2 (Chart or Table/List):
 {
   "responseType": "chart",
   "operation": {
-    "type": "group_by | top_n | trend | distribution | stats | raw",
+    "type": "filter | distribution | group_by | top_n | trend | stats | raw | count_by",
+    "filterCol": "Column name to search inside (ONLY required for 'filter')",
+    "filterVal": "Value to match, e.g. 'Fail' (ONLY required for 'filter')",
+    "operator": "equals | contains | > | < | >= | <=" (ONLY required for 'filter', defaults to 'contains'),
     "groupCol": "string column name",
     "metricCol": "numeric column name",
     "aggregate": "sum | avg | count | max | min",
     "column": "column name",
+    "countCol": "column name to count by (for count_by)",
     "n": 5,
     "order": "desc | asc",
-    "dateCol": "date column name",
-    "limit": 10
+    "dateCol": "date/year column name",
+    "limit": 50
   },
   "chartType": "bar | line | pie | area | table",
-  "insight": "2 sentence insight using real numbers",
-  "title": "Short chart title"
+  "insight": "Brief insight about what this data shows",
+  "title": "Clear descriptive title"
 }
-RULES:
-- Only use column names that actually exist in the dataset
-- For group_by: groupCol must be string type, metricCol must be numeric type
-- Be specific — mention actual column names and real values from the sample data in your answers
-- If user greets you or says hi, respond conversationally and suggest what they can ask
-- Respond with ONLY raw JSON. No markdown, no backticks, no extra text.`;
+
+Respond with ONLY raw JSON. No markdown, no backticks.`;
 
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -115,14 +175,11 @@ RULES:
             {
               role: "system",
               content:
-                "You are a helpful data analyst. You have access to the user's dataset. Always respond with valid JSON only. No markdown, no backticks, no extra text whatsoever.",
+                "You are a precise data analyst. Always use exact numbers from the provided statistics. If a user asks for lists or names of specific rows, output a 'filter' operation with a 'table' chartType. Respond with valid JSON only.",
             },
-            {
-              role: "user",
-              content: prompt,
-            },
+            { role: "user", content: prompt },
           ],
-          temperature: 0.3,
+          temperature: 0.1,
           max_tokens: 1024,
         }),
       },
@@ -131,29 +188,26 @@ RULES:
     if (!response.ok) {
       const errData = await response.json();
       console.error("Groq API error:", errData);
-      if (response.status === 429) {
-        return res.status(429).json({
-          error: "Too many requests. Please wait a moment and try again.",
-        });
-      }
-      if (response.status === 401) {
-        return res.status(401).json({
-          error: "Invalid API key. Check your backend/.env file.",
-        });
-      }
-      return res.status(500).json({
-        error: `API error ${response.status}. Try again.`,
-      });
+      if (response.status === 429)
+        return res
+          .status(429)
+          .json({ error: "Too many requests. Wait a moment and try again." });
+      if (response.status === 401)
+        return res
+          .status(401)
+          .json({ error: "Invalid API key. Check your backend/.env file." });
+      return res
+        .status(500)
+        .json({ error: `API error ${response.status}. Try again.` });
     }
 
     const groqData = await response.json();
     const raw = groqData?.choices?.[0]?.message?.content?.trim();
 
-    if (!raw) {
-      return res.status(500).json({
-        error: "AI returned empty response. Please try again.",
-      });
-    }
+    if (!raw)
+      return res
+        .status(500)
+        .json({ error: "AI returned empty response. Please try again." });
 
     let parsed;
     try {
@@ -164,23 +218,20 @@ RULES:
       parsed = JSON.parse(clean);
     } catch {
       console.error("Failed to parse AI response:", raw);
-      return res.status(500).json({
-        error: "AI returned invalid format. Try rephrasing your question.",
-      });
+      return res
+        .status(500)
+        .json({ error: "AI returned invalid format. Try rephrasing." });
     }
 
-    if (!parsed.responseType) {
-      return res.status(500).json({
-        error: "AI returned incomplete response. Try again.",
-      });
-    }
+    if (!parsed.responseType)
+      return res
+        .status(500)
+        .json({ error: "AI returned incomplete response. Try again." });
 
     res.json(parsed);
   } catch (err) {
     console.error("Insights route error:", err.message);
-    res.status(500).json({
-      error: "Something went wrong. Please try again.",
-    });
+    res.status(500).json({ error: "Something went wrong. Please try again." });
   }
 });
 
